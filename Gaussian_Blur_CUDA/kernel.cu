@@ -17,7 +17,6 @@ int dummy; // makes it work
 #define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #define DIVCEIL(x, y) (((x) + (y) - 1) / (y)) // division that rounds up
 
-// ONE OF THE PROBLEMS IS SOMEWHERE IN THIS FUNCTION
 __global__ void separateChannels(uchar4 *inputRGBA,
                                  int *_x_dim,
                                  int *_y_dim,
