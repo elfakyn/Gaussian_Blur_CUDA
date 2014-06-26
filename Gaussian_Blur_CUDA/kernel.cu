@@ -7,27 +7,27 @@
 #include <iostream>
 
 using std::cout;
+using std::cin;
 using std::fstream;
 
 int dummy; // makes it work
 
-#define BLOCK_SIZE_MULTIPLIER 4 // TODO: make ths dynamic as to not exceed 1024 blocks
-#define BLOCK_SIZE_LINEAR 2000
+#define BLOCK_SIZE_MULTIPLIER 16 // TODO: make ths dynamic as to not exceed 1024 blocks
 
 #define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #define DIVCEIL(x, y) (((x) + (y) - 1) / (y)) // division that rounds up
 
 __global__ void separateChannels(uchar4 *inputRGBA,
-                                 int *_x_dim,
-                                 int *_y_dim,
-                                 unsigned char *r,
-                                 unsigned char *g,
-                                 unsigned char *b)
+    int *_x_dim,
+    int *_y_dim,
+    unsigned char *r,
+    unsigned char *g,
+    unsigned char *b)
 {
     int x_dim = *_x_dim;
     int y_dim = *_y_dim;
 
-    int i = threadIdx.x + blockDim.x * blockIdx.x;
+    int i = threadIdx.x + blockDim.x * blockIdx.x + (threadIdx.y + blockDim.y * blockIdx.y) * x_dim;
     if (i >= x_dim * y_dim) {
         return;  // value out of bounds, don't do anything
     }
@@ -38,16 +38,16 @@ __global__ void separateChannels(uchar4 *inputRGBA,
 }
 
 __global__ void recombineChannels(unsigned char *r,
-                                  unsigned char *g,
-                                  unsigned char *b,
-                                  int *_x_dim,
-                                  int *_y_dim,
-                                  uchar4 *outputRGBA)
+    unsigned char *g,
+    unsigned char *b,
+    int *_x_dim,
+    int *_y_dim,
+    uchar4 *outputRGBA)
 {
     int x_dim = *_x_dim;
     int y_dim = *_y_dim;
 
-    int i = threadIdx.x + blockDim.x * blockIdx.x;
+    int i = threadIdx.x + blockDim.x * blockIdx.x + (threadIdx.y + blockDim.y * blockIdx.y) * x_dim;
     if (i >= x_dim * y_dim) {
         return;
     }
@@ -61,11 +61,11 @@ __global__ void recombineChannels(unsigned char *r,
 }
 
 __global__ void gaussianBlur(unsigned char *in,
-                             float *filter,
-                             int *_filter_dim,
-                             int *_x_dim,
-                             int *_y_dim,
-                             unsigned char *out)
+    float *filter,
+    int *_filter_dim,
+    int *_x_dim,
+    int *_y_dim,
+    unsigned char *out)
 {
     int filter_dim = *_filter_dim;
     int x_dim = *_x_dim;
@@ -89,7 +89,7 @@ __global__ void gaussianBlur(unsigned char *in,
             x_i_pos = x_i + x_pos - offset;
             y_i_pos = y_i + y_pos - offset;
             val += float(in[CLAMP(x_i_pos, 0, x_dim - 1) +
-                            CLAMP(y_i_pos, 0, y_dim - 1) * x_dim]) *
+                CLAMP(y_i_pos, 0, y_dim - 1) * x_dim]) *
                 filter[x_i + y_i * filter_dim];
         }
     }
@@ -107,10 +107,10 @@ int main()
     h_img_stream_in.ignore(2, EOF); // ignores the P3 at the beginning of the file
     h_img_stream_in >> h_x_dim >> h_y_dim;
     h_img_stream_in >> dummy;
-    
+
     int h_xy_dim = h_x_dim * h_y_dim;
     h_img = (uchar4 *) malloc(h_xy_dim * sizeof(uchar4));
-    
+
     int x, y, z;
     for (int i = 0; i < h_xy_dim; i++) {
         h_img_stream_in >> x >> y >> z;
@@ -121,6 +121,8 @@ int main()
     }
 
     h_img_stream_in.close();
+
+    cout<<"file loaded\n";
 
     // initialize, allocate and read relevant host filter variables
     int h_filter_dim;
@@ -137,6 +139,8 @@ int main()
     }
 
     h_filter_stream_in.close();
+
+    cout<<"filter loaded\n";
 
     // initialie and allocate relevant device variables
     uchar4 *d_img_in, *d_img_out;
@@ -168,17 +172,21 @@ int main()
 
     // determine appropriate block dimensions and numbers
     dim3 block_dim = dim3(h_filter_dim * BLOCK_SIZE_MULTIPLIER,
-                          h_filter_dim * BLOCK_SIZE_MULTIPLIER, 1);
+        h_filter_dim * BLOCK_SIZE_MULTIPLIER, 1);
     dim3 block_number = dim3(DIVCEIL(h_x_dim, block_dim.x),
-                             DIVCEIL(h_y_dim, block_dim.y), 1);
+        DIVCEIL(h_y_dim, block_dim.y), 1);
+
+    cout<<"memory copied\n";
+    cout << "dummy input: ";
+    cin>>dummy;
 
     cout<<"starting operations\n";
     // perform operations on GPU
 
-    separateChannels<<<BLOCK_SIZE_LINEAR, DIVCEIL(h_xy_dim, BLOCK_SIZE_LINEAR)>>>
+    separateChannels<<<block_dim, block_number>>>
         (d_img_in, d_x_dim, d_y_dim, d_img_r_in, d_img_g_in, d_img_b_in);
     cout<<"channels separated\n";
-    
+
     gaussianBlur<<<block_dim, block_number>>>
         (d_img_r_in, d_filter, d_filter_dim, d_x_dim, d_y_dim, d_img_r_out);
     cout<<"red blurred\n";
@@ -188,11 +196,11 @@ int main()
     gaussianBlur<<<block_dim, block_number>>>
         (d_img_b_in, d_filter, d_filter_dim, d_x_dim, d_y_dim, d_img_b_out);
     cout<<"blue blurred\n";
-    
-    recombineChannels<<<BLOCK_SIZE_LINEAR, DIVCEIL(h_xy_dim, BLOCK_SIZE_LINEAR)>>>
+
+    recombineChannels<<<block_dim, block_number>>>
         (d_img_r_out, d_img_g_out, d_img_b_out, d_x_dim, d_y_dim, d_img_out);
     cout<<"channels recombined\n";
-    cout<<"operations done.\n";
+    cout<<"operations done\n";
 
     // copy data back from GPU and print it to file
     cudaMemcpy(h_img, d_img_out, h_xy_dim * sizeof(uchar4), cudaMemcpyDeviceToHost);
@@ -204,6 +212,8 @@ int main()
         h_img_stream_out << (int)h_img[i].x << " " << (int)h_img[i].y << " " << (int)h_img[i].z << "\n";
     }
     h_img_stream_out.close();
+
+    cout<<"output written\n";
 
     // free memory and exit
     free(h_img);
@@ -222,5 +232,6 @@ int main()
     cudaFree(d_filter);
     cudaFree(d_filter_dim);
 
+    cout<<"ALL DONE.\n";
     return 0;
 }
